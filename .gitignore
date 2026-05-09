@@ -1,0 +1,28 @@
+# retoc staging dir (huge, regeneratable)
+extracted/staging/
+
+# extracted assets (regeneratable from paks via retoc — see INSTRUCTION-fmodel.md)
+extracted/
+
+# UE4SS / game logs
+*.log
+UE4SS.log
+
+# Tool binaries (download fresh from official sources — see README)
+tools/FModel.exe
+tools/retoc.exe
+tools/UAssetGUI.exe
+tools/oo2core_*.dll
+tools/Output/
+
+# OS / editor noise
+.DS_Store
+Thumbs.db
+*.swp
+.vscode/
+.idea/
+
+# Backup files from UAssetGUI
+*.uasset.bak
+*.uexp.bak
+*.json.bak
