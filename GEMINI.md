@@ -28,11 +28,20 @@ Manual sync. No symlink set up. Edit here → copy → reload.
 
 ## Currently installed paks (third-party)
 
-- `AutoGrabber_P.pak` — GoldBl4d3, auto-loots nearby pickups.
-- `PurpleUtilityPickup_P.pak` / `WhitePrimaryPickup_P.pak` — tier filters paired with AutoGrabber.
-- `ModHub_P.pak` — mod manager UI.
+- `AutoGrabber_P.pak` — GoldBl4d3. https://www.nexusmods.com/farfarwest/mods/34
+- `ModHub_P.pak` — GoldBl4d3, **dependency** for RogueHub-registered pak mods. https://www.nexusmods.com/farfarwest/mods/16
+- `PurpleUtilityPickup_P.pak` / `WhitePrimaryPickup_P.pak` — visual reskins of ammo boxes.
 
 No source. Modify via (a) pak rebuild, or (b) Lua hook intercepting the BP function. Prefer (b).
+
+## Nexus releases / credits
+
+| Mod | Author | Nexus |
+|-----|--------|-------|
+| BHopDash (this repo) | Abeelha | https://www.nexusmods.com/farfarwest/mods/39 |
+| BHopMod (original jump-based) | Unconscious66 | https://www.nexusmods.com/farfarwest/mods/15 |
+| AutoGrabber | GoldBl4d3 | https://www.nexusmods.com/farfarwest/mods/34 |
+| ModHub | GoldBl4d3 | https://www.nexusmods.com/farfarwest/mods/16 |
 
 ## Pak modding stack (per `docs/asset-editing.md`)
 

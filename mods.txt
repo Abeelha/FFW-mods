@@ -11,6 +11,9 @@ BPML_GenericFunctions : 1
 BPModLoaderMod : 1
 jsbLuaProfilerMod : 0
 BHopDash : 1
+FFW_Dump : 0
+AutoGrabberGate : 0
+AutoGrabberPro : 1
 Speedometer : 1
 
 
