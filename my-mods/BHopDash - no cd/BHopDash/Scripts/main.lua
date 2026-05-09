@@ -70,9 +70,11 @@ local function onTick(ctx)
     local groundOk, ground = pcall(cachedCM.IsMovingOnGround, cachedCM)
     if not groundOk or ground ~= true then return end
 
+    -- Cooldown gate: only blocks AFTER a confirmed-successful dash. Failed
+    -- attempts (game busy: weapon state, anim lock, mid-recovery) don't
+    -- burn cooldown so we retry next tick (~16ms) instead of waiting 0.5s.
     local now = os.clock()
     if now - lastDash < DASH_INTERVAL then return end
-    lastDash = now
 
     -- Force-reset every gate the game uses to throttle F_Dash. The four
     -- properties below are visible state. The actual cooldown is enforced
@@ -89,12 +91,21 @@ local function onTick(ctx)
         p.dashCooldown = 0.0
         p.dashedTimes  = 0
     end)
+
+    -- Sample dashedTimes before; F_Dash increments it on a real fire.
+    -- We just set it to 0, so any non-zero after = success.
     pcall(p.F_Dash, p)
-    -- Immediately tell the game the cooldown is done. This invokes the
-    -- BP-side handler that flips isDashOnCooldown=false and refills the
-    -- dash charge, killing the timer F_Dash just started.
+    local okAfter, after = pcall(function() return p.dashedTimes end)
+    local fired = okAfter and after and after > 0
+
+    -- Always cleanup so game-side state stays consistent for the next
+    -- attempt — even on a failed fire, we want the cooldown timer killed.
     pcall(p.F_DashCooldown, p)
     pcall(p.F_ResetAndUpdateDash, p)
+
+    if fired then
+        lastDash = now
+    end
 end
 
 ----------------------------------------------------------------- registration

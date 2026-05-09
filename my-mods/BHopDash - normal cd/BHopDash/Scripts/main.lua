@@ -15,7 +15,6 @@ local PLAYER_ASSET  = "/Game/Player/BP_Player.BP_Player_C"
 local TICK_FN       = PLAYER_ASSET .. ":ReceiveTick"
 local DASH_KEY_NAME = "LeftShift"
 local RETRY_MS      = 500
-local DASH_INTERVAL = 0.5  -- seconds between dashes
 
 ----------------------------------------------------------------- locals
 local pcall    = pcall
@@ -27,7 +26,6 @@ local hooked   = false
 local dashKey  = nil   -- cached FName-wrapped key struct
 local cachedPC = nil
 local cachedCM = nil
-local lastDash = 0.0   -- os.clock() of last dash fire
 
 ----------------------------------------------------------------- helpers
 local function log(m) print("[BHopDash] " .. m) end
@@ -70,46 +68,20 @@ local function onTick(ctx)
     local groundOk, ground = pcall(cachedCM.IsMovingOnGround, cachedCM)
     if not groundOk or ground ~= true then return end
 
-    local now = os.clock()
-    if now - lastDash < DASH_INTERVAL then return end
-    lastDash = now
-
-    -- Force-reset every gate the game uses to throttle F_Dash. The four
-    -- properties below are visible state. The actual cooldown is enforced
-    -- by an internal FTimerHandle that F_Dash sets at the start of each
-    -- dash and that fires F_DashCooldown when the timer expires. Setting
-    -- the bool/int properties alone won't kill that timer, so we ALSO
-    -- call F_DashCooldown + F_ResetAndUpdateDash right after F_Dash —
-    -- those are the same functions the game itself calls when the timer
-    -- fires naturally. Calling them early force-ends the cooldown.
+    -- Refill cooldown so F_Dash can never be gated, then dash.
     pcall(function()
         p.isDashOnCooldown = false
         local mx = p.maxDash
         if mx and mx > 0 then p.currentDashLeft = mx end
-        p.dashCooldown = 0.0
-        p.dashedTimes  = 0
     end)
     pcall(p.F_Dash, p)
-    -- Immediately tell the game the cooldown is done. This invokes the
-    -- BP-side handler that flips isDashOnCooldown=false and refills the
-    -- dash charge, killing the timer F_Dash just started.
-    pcall(p.F_DashCooldown, p)
-    pcall(p.F_ResetAndUpdateDash, p)
 end
 
 ----------------------------------------------------------------- registration
--- Global flag survives Lua reload; UE4SS keeps the C++ hook registered
--- across Ctrl+R, so re-registering double-binds ReceiveTick = freeze.
-_G.__BHopDash_hooked = _G.__BHopDash_hooked or false
-_G.__BHopDash_onTick = onTick  -- always point latest closure
-
 LoopAsync(RETRY_MS, function()
-    if _G.__BHopDash_hooked then
-        log("ready (reused hook)")
-        return true
-    end
-    if pcall(RegisterHook, TICK_FN, function(ctx) return _G.__BHopDash_onTick(ctx) end) then
-        _G.__BHopDash_hooked = true
+    if hooked then return true end
+    if pcall(RegisterHook, TICK_FN, onTick) then
+        hooked = true
         log("ready")
         return true
     end
