@@ -17,6 +17,7 @@ Speedometer : 1
 BHopDash : 1
 WispElec : 1
 AcidElec : 1
+ThrowerCombo : 1
 
 
 ; Built-in keybinds, do not move up!
