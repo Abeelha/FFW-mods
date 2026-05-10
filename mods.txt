@@ -15,7 +15,8 @@ FFW_Dump : 0
 AutoGrabberGate : 1
 AutoGrabberPro : 0
 Speedometer : 1
-Minimap : 1
+Minimap : 0
+WispElec : 1
 
 
 ; Built-in keybinds, do not move up!
