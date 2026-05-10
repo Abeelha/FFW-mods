@@ -12,9 +12,10 @@ BPModLoaderMod : 1
 jsbLuaProfilerMod : 0
 BHopDash : 1
 FFW_Dump : 0
-AutoGrabberGate : 0
-AutoGrabberPro : 1
+AutoGrabberGate : 1
+AutoGrabberPro : 0
 Speedometer : 1
+Minimap : 1
 
 
 ; Built-in keybinds, do not move up!
