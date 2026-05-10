@@ -14,12 +14,32 @@ Press **INSERT** in-game to toggle the developer `UI_CheatMenu_C` widget that sh
 - No keybind collisions: only uses `INSERT`.
 
 ### `mods/BHopDash/` — auto-bunnyhop dash
-Lua dash-based bhop. **Hold `LeftShift` while moving on ground → `F_Dash` fires every game tick**, chaining naturally. No keybind, no toggle, always on. Coexists cleanly with Speedometer (F6/F7/F8) and DPSMeter (F7).
+Lua dash-based bhop. **Hold `LeftShift` while moving on ground → `F_Dash` polls every game tick**, chaining naturally. No keybind, no toggle, always on. Coexists cleanly with Speedometer (F6/F7/F8) and DPSMeter (F7).
 
-- Hooks `BP_Player_C:ReceiveTick`, polls `IsInputKeyDown(LeftShift)` + `CharacterMovement:IsMovingOnGround()`, refills cooldown every tick so the game can't gate the dash.
+- Hooks `BP_Player_C:ReceiveTick`, polls `IsInputKeyDown(LeftShift)` + `CharacterMovement:IsMovingOnGround()`. F_Dash itself is called every tick; `DASH_INTERVAL` gates the COOLDOWN-NUKE pair (`F_DashCooldown` + `F_ResetAndUpdateDash`), not F_Dash, so the snappy feel is preserved while still letting users throttle.
+- Config: `DASH_INTERVAL = 0` for spammy original feel; raise to cap dash rate.
 - Resilient: 500 ms retry loop re-registers the hook until the player BP is loaded.
 - Nexus release: https://www.nexusmods.com/farfarwest/mods/39 (by me, Abeelha)
 - Inspired by Unconscious66's original jump-based **BHopMod**: https://www.nexusmods.com/farfarwest/mods/15
+
+### `mods/AutoGrabberGate/` — smart-pickup gate for GoldBl4d3's AutoGrabber
+Wraps the third-party `AutoGrabber_P.pak` so it skips pickups you don't need. Primary/secondary ammo boxes stay in world above 50 %; utility (grenade) boxes stay above 0. Implementation toggles per-box `CollisionEnabled` between `QueryAndPhysics` (grabbable) and `PhysicsOnly` (falls/physics but invisible to AutoGrabber's sphere trace). Settle window (3 s) + velocity gate (5 u/s) ensures boxes physics-settle before any decision.
+
+- Source-of-truth: hardcoded BP property hashes against `tools/Output/Exports/FarFarWest/Content/Player/BP_PlayerState.json` (rotate on game patch).
+- `FindAllOf("BP_AmmoBox_C")` filtered by exact `classNameOf(box) == className` to prevent subclass double-processing (Spell, Utility, Throw subclasses leak into parent passes and crashed the engine with 5 Hz collision flip-flop).
+
+### `mods/WispElec/` — auto-supercharge Fire Wisp on spawn
+Hooks `BP_FireWisp_C:ReceiveBeginPlay`, waits 250 ms for replication, then sets `wisp.isSupercharged = true` + manually invokes `OnRep_isSupercharged()`. Game's own VFX + damage-tier logic flips on frame 1. No need to cast an Elec spell at the wisp's target. Idempotent — skips already-supercharged wisps (e.g. user did the manual combo).
+
+### `mods/AcidElec/` — auto-electrify Acid Rain on spawn
+Mirror of WispElec architecture. `BP_Rain_Acid_C` exposes replicated bool `isElec` (RepNotify `OnRep_isElec`). On `ReceiveBeginPlay` → 250 ms grace → `rain.isElec = true` + `rain:OnRep_isElec()`. Lightning auto-strikes inside the rain zone + Niagara swaps to `NS_AcidRain_Elec`. No need to cast a Thunder Strike into the rain.
+
+### `mods/ThrowerCombo/` — auto-imbue Fire + Elec on Acid Thrower targets
+Acid Thrower normally needs the target pre-debuffed with Fire OR Elec to trigger combo micro-explosions. This mod removes the prereq by applying both debuffs on every acid tick, so the combo handler in `UO_Buff_Acid` tick bytecode spawns BOTH fire and elec explosions automatically.
+
+- Hooks `UO_Buff_Acid_C:F_StartBuff_Everyone` (fires ~5 Hz per target during spray).
+- Calls `target:F_ReceiveBuff(owner, location, UO_Buff_Fire_C)` + same for `UO_Buff_Elec_C`. **Critical:** `F_ReceiveBuff` is the only buff-apply path that registers with the target's buff list. Raw `StaticConstructObject + F_StartBuff_Everyone()` creates orphan UObjects that the combo check misses.
+- Per-target throttle (0.4 s) via `__mode = "k"` weak-keyed table — released targets GC freely.
 
 ## Third-party paks installed
 
@@ -28,10 +48,6 @@ Located under `<game>/Content/Paks/Mods/`:
 - `ModHub_P.pak` — by **GoldBl4d3**, in-game mod manager UI. **Required dependency for any pak mod that registers itself via the `RogueHub` system** (AutoGrabber depends on it). https://www.nexusmods.com/farfarwest/mods/16
 - `WhitePrimaryPickup_P.pak` — visual reskin of `GPE/BP_AmmoBox` (primary ammo) for higher visibility.
 - `PurpleUtilityPickup_P.pak` — visual reskin of `GPE/BP_AmmoBox_Utility`.
-
-## In progress — AutoGrabberGate
-
-Make AutoGrabber smart: only pick up ammo when current ≤ 50 % of max, only pick up utility when current count = 0 (max 3). Avoids wasting pickups during boss fights. Blueprint inspection in `extracted/AutoGrabber/` and `extracted/Pickups/`. Likely shipped as a Lua hook, not a pak rebuild.
 
 ## Tooling (`tools/`)
 
@@ -60,8 +76,13 @@ FFW-mods/
 ├── CLAUDE.md / GEMINI.md / KIMI.md   # AI agent project context (kept in sync)
 ├── README.md
 ├── mods/                             # UE4SS Lua mods (source of truth)
+│   ├── AcidElec/Scripts/main.lua
+│   ├── AutoGrabberGate/Scripts/main.lua
 │   ├── BHopDash/Scripts/main.lua
-│   └── FFW_Cheats/Scripts/main.lua
+│   ├── FFW_Cheats/Scripts/main.lua
+│   ├── ThrowerCombo/Scripts/main.lua
+│   └── WispElec/Scripts/main.lua
+├── my-mods/                          # Nexus-ready release bundles + zips
 ├── docs/asset-editing.md             # pak modding cheat sheet
 ├── tools/                            # retoc, UAssetGUI, FModel, mappings
 ├── extracted/                        # working dir for pak inspection
