@@ -235,7 +235,11 @@ local function processClass(className, shouldSkip)
   local nBlocked, nUnblocked = 0, 0
   local now = nowMs()
   for _, box in ipairs(boxes) do
-    if isValid(box) then
+    -- FindAllOf returns subclasses too (BP_AmmoBox_C → also Spell/Utility).
+    -- Skip non-exact-class matches so utility/spell boxes don't get
+    -- double-processed in the parent pass (causes blocked/unblocked
+    -- flip-flop and ultimately a collision-write storm crash).
+    if isValid(box) and classNameOf(box) == className then
       local key = fname(box)
       if not firstSeenAt[key] then firstSeenAt[key] = now end
 
