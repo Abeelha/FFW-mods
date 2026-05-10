@@ -89,6 +89,11 @@ local pName = {
 local logSampled    = {}
 local lastHeartbeat = 0
 local tickCount     = 0
+-- Aggregated transition counts since last heartbeat; emitted in heartbeat.
+local txCounts = {
+  blocked   = {},
+  unblocked = {},
+}
 
 ----------------------------------------------------------------- utils
 local function logf(fmt, ...)
@@ -234,7 +239,13 @@ end
 
 ----------------------------------------------------------- decisions
 local function slotFull(w, ratio)
-  if w.max <= 0 then return true end  -- mag-only weapon
+  -- max == 0 means the player has no weapon equipped for this slot.
+  -- Don't block: leave the box grabbable. The game itself no-ops or
+  -- stores the ammo internally; not our job to second-guess that.
+  -- (Earlier returned true for "mag-only weapons" but those actually
+  -- have a non-zero max in the runtime stats — e.g. shurikens are 15/15,
+  -- not 0/0 — so this case is purely "no slot equipped".)
+  if w.max <= 0 then return false end
   return (w.cur / w.max) >= ratio
 end
 
@@ -372,14 +383,27 @@ local function tick()
       stats.A.cur, stats.A.max, rA, tostring(skipPrimary),
       stats.B.cur, stats.B.max, rB, tostring(skipSecondary),
       stats.gren, tostring(skipUtility))
+    local b, u = txCounts.blocked, txCounts.unblocked
+    local bSum = (b.primary or 0) + (b.secondary or 0) + (b.utility or 0)
+    local uSum = (u.primary or 0) + (u.secondary or 0) + (u.utility or 0)
+    if bSum + uSum > 0 then
+      logf("transitions since last: blocked p=%d s=%d u=%d | unblocked p=%d s=%d u=%d",
+        b.primary or 0, b.secondary or 0, b.utility or 0,
+        u.primary or 0, u.secondary or 0, u.utility or 0)
+    end
+    txCounts.blocked   = {}
+    txCounts.unblocked = {}
   end
 
-  if (pB + sB + uB) > 0 then
-    logf("blocked: primary=%d secondary=%d utility=%d", pB, sB, uB)
-  end
-  if (pU + sU + uU) > 0 then
-    logf("unblocked: primary=%d secondary=%d utility=%d", pU, sU, uU)
-  end
+  -- Roll up transition counts into the heartbeat to keep log clean.
+  -- Per-tick spam was masking real signal (e.g. lobby spawners cycle
+  -- 24 boxes/tick which produced log floods).
+  txCounts.blocked.primary   = (txCounts.blocked.primary   or 0) + pB
+  txCounts.blocked.secondary = (txCounts.blocked.secondary or 0) + sB
+  txCounts.blocked.utility   = (txCounts.blocked.utility   or 0) + uB
+  txCounts.unblocked.primary   = (txCounts.unblocked.primary   or 0) + pU
+  txCounts.unblocked.secondary = (txCounts.unblocked.secondary or 0) + sU
+  txCounts.unblocked.utility   = (txCounts.unblocked.utility   or 0) + uU
 end
 
 ----------------------------------------------------------------- driver
