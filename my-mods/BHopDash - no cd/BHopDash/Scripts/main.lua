@@ -15,7 +15,7 @@ local PLAYER_ASSET  = "/Game/Player/BP_Player.BP_Player_C"
 local TICK_FN       = PLAYER_ASSET .. ":ReceiveTick"
 local DASH_KEY_NAME = "LeftShift"
 local RETRY_MS      = 500
-local DASH_INTERVAL = 0.2  -- seconds between dashes
+local DASH_INTERVAL = 0.2  -- seconds between cooldown nukes (0 = no throttle, fully snappy; >0 = max ~1 dash per DASH_INTERVAL seconds)
 
 ----------------------------------------------------------------- locals
 local pcall    = pcall
@@ -23,12 +23,11 @@ local print    = print
 local tostring = tostring
 
 ----------------------------------------------------------------- state
-local hooked      = false
-local dashKey     = nil   -- cached FName-wrapped key struct
-local cachedPC    = nil
-local cachedCM    = nil
-local lastDash    = 0.0   -- os.clock() of last dash fire
-local wasOnGround = false -- previous tick's ground state (for land detection)
+local hooked   = false
+local dashKey  = nil   -- cached FName-wrapped key struct
+local cachedPC = nil
+local cachedCM = nil
+local lastNuke = 0.0   -- os.clock() of last cooldown-nuke pass
 
 ----------------------------------------------------------------- helpers
 local function log(m) print("[BHopDash] " .. m) end
@@ -69,26 +68,25 @@ local function onTick(ctx)
     if not heldOk or held ~= true then return end
 
     local groundOk, ground = pcall(cachedCM.IsMovingOnGround, cachedCM)
-    if not groundOk or ground ~= true then
-        wasOnGround = false  -- airborne: arm landing-bypass for next ground touch
-        return
-    end
+    if not groundOk or ground ~= true then return end
 
-    -- Landing-bypass: if we transitioned airborne→ground this tick, the
-    -- previous dash's arc has completed and the player landed. Fire the
-    -- next dash immediately so the chain feels natural (no DASH_INTERVAL
-    -- gap on top of the physics arc). DASH_INTERVAL still applies when
-    -- the player stays grounded continuously (rapid re-press safety,
-    -- e.g. on flat ground where the dash never goes airborne).
-    local justLanded = not wasOnGround
-    wasOnGround = true
-
+    -- F_Dash is POLLED every tick — that's where the snappy feel comes
+    -- from. The game has a 1-second natural cooldown (p.dashCooldown
+    -- default = 1.0); without us nuking that cooldown, F_Dash would
+    -- only fire once per second.
+    --
+    -- DASH_INTERVAL is the PERIOD BETWEEN COOLDOWN NUKES, not a gate on
+    -- F_Dash itself. F_Dash still polls at 60 Hz, so the moment the
+    -- game says "dash ready," it fires. The user's DASH_INTERVAL just
+    -- decides how often we tell the game "dash ready":
+    --   * DASH_INTERVAL <= 0   → nuke every tick → continuous dash spam
+    --   * DASH_INTERVAL = 0.2  → nuke every 0.2s → 1 dash per 0.2s max
+    -- Between nukes, the game's own cooldown blocks F_Dash naturally,
+    -- giving the user's tunable safety floor with zero feel-cost.
     local now = os.clock()
-    if justLanded or (now - lastDash) >= DASH_INTERVAL then
-        -- Force-reset internal cooldown state before fire. The actual
-        -- cooldown is enforced by an internal FTimerHandle that F_Dash
-        -- sets; resetting these properties alone won't kill the timer
-        -- (the cleanup pair below does that).
+    local nukeNow = (DASH_INTERVAL <= 0) or (now - lastNuke) >= DASH_INTERVAL
+
+    if nukeNow then
         pcall(function()
             p.isDashOnCooldown = false
             local mx = p.maxDash
@@ -96,19 +94,15 @@ local function onTick(ctx)
             p.dashCooldown = 0.0
             p.dashedTimes  = 0
         end)
-        pcall(p.F_Dash, p)
-        lastDash = now
     end
 
-    -- Cleanup runs EVERY tick while held — not just after a fire. These
-    -- are the same functions the game itself calls when the cooldown
-    -- timer naturally expires. Calling them per-tick keeps the game's
-    -- internal cooldown perpetually dead, so the next gate-passing
-    -- F_Dash hits a fully primed state and feels instant. (When this
-    -- pair only ran after a fire, the cooldown re-engaged between dashes
-    -- and the very first dash of a held session felt clunky.)
-    pcall(p.F_DashCooldown, p)
-    pcall(p.F_ResetAndUpdateDash, p)
+    pcall(p.F_Dash, p)
+
+    if nukeNow then
+        pcall(p.F_DashCooldown, p)
+        pcall(p.F_ResetAndUpdateDash, p)
+        lastNuke = now
+    end
 end
 
 ----------------------------------------------------------------- registration
