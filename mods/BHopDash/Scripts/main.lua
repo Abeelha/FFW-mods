@@ -15,7 +15,7 @@ local PLAYER_ASSET  = "/Game/Player/BP_Player.BP_Player_C"
 local TICK_FN       = PLAYER_ASSET .. ":ReceiveTick"
 local DASH_KEY_NAME = "LeftShift"
 local RETRY_MS      = 500
-local DASH_INTERVAL = 0.5  -- seconds between dashes
+local DASH_INTERVAL = 0.2  -- seconds between dashes
 
 ----------------------------------------------------------------- locals
 local pcall    = pcall
@@ -70,37 +70,34 @@ local function onTick(ctx)
     local groundOk, ground = pcall(cachedCM.IsMovingOnGround, cachedCM)
     if not groundOk or ground ~= true then return end
 
-    -- Cooldown gate: hard floor between dash attempts.
-    --   lastDash advances on every gate-pass (not only on confirmed
-    --   F_Dash success) because p.dashedTimes isn't a reliable success
-    --   signal — F_ResetAndUpdateDash zeroes it post-call, and some BP
-    --   states never increment it. Conditioning lastDash on a success
-    --   probe makes DASH_INTERVAL a dead constant (gate never trips,
-    --   dashes fire every tick).
+    -- Cooldown gate: F_Dash throttled to DASH_INTERVAL. lastDash
+    -- advances unconditionally because p.dashedTimes is not a reliable
+    -- success signal (F_ResetAndUpdateDash zeroes it post-call; some
+    -- BP states never increment it).
     local now = os.clock()
-    if now - lastDash < DASH_INTERVAL then return end
-    lastDash = now
+    if (now - lastDash) >= DASH_INTERVAL then
+        -- Force-reset internal cooldown state before fire. The actual
+        -- cooldown is enforced by an internal FTimerHandle that F_Dash
+        -- sets; resetting these properties alone won't kill the timer
+        -- (the cleanup pair below does that).
+        pcall(function()
+            p.isDashOnCooldown = false
+            local mx = p.maxDash
+            if mx and mx > 0 then p.currentDashLeft = mx end
+            p.dashCooldown = 0.0
+            p.dashedTimes  = 0
+        end)
+        pcall(p.F_Dash, p)
+        lastDash = now
+    end
 
-    -- Force-reset every gate the game uses to throttle F_Dash. The four
-    -- properties below are visible state. The actual cooldown is enforced
-    -- by an internal FTimerHandle that F_Dash sets at the start of each
-    -- dash and that fires F_DashCooldown when the timer expires. Setting
-    -- the bool/int properties alone won't kill that timer, so we ALSO
-    -- call F_DashCooldown + F_ResetAndUpdateDash right after F_Dash —
-    -- those are the same functions the game itself calls when the timer
-    -- fires naturally. Calling them early force-ends the cooldown.
-    pcall(function()
-        p.isDashOnCooldown = false
-        local mx = p.maxDash
-        if mx and mx > 0 then p.currentDashLeft = mx end
-        p.dashCooldown = 0.0
-        p.dashedTimes  = 0
-    end)
-
-    pcall(p.F_Dash, p)
-
-    -- Cleanup: kill game-side cooldown timer + reset dash state so the
-    -- next gate-passing attempt isn't blocked by the game's own throttle.
+    -- Cleanup runs EVERY tick while held — not just after a fire. These
+    -- are the same functions the game itself calls when the cooldown
+    -- timer naturally expires. Calling them per-tick keeps the game's
+    -- internal cooldown perpetually dead, so the next gate-passing
+    -- F_Dash hits a fully primed state and feels instant. (When this
+    -- pair only ran after a fire, the cooldown re-engaged between dashes
+    -- and the very first dash of a held session felt clunky.)
     pcall(p.F_DashCooldown, p)
     pcall(p.F_ResetAndUpdateDash, p)
 end
