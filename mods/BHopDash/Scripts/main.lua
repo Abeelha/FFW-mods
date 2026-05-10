@@ -23,11 +23,12 @@ local print    = print
 local tostring = tostring
 
 ----------------------------------------------------------------- state
-local hooked   = false
-local dashKey  = nil   -- cached FName-wrapped key struct
-local cachedPC = nil
-local cachedCM = nil
-local lastDash = 0.0   -- os.clock() of last dash fire
+local hooked      = false
+local dashKey     = nil   -- cached FName-wrapped key struct
+local cachedPC    = nil
+local cachedCM    = nil
+local lastDash    = 0.0   -- os.clock() of last dash fire
+local wasOnGround = false -- previous tick's ground state (for land detection)
 
 ----------------------------------------------------------------- helpers
 local function log(m) print("[BHopDash] " .. m) end
@@ -68,14 +69,22 @@ local function onTick(ctx)
     if not heldOk or held ~= true then return end
 
     local groundOk, ground = pcall(cachedCM.IsMovingOnGround, cachedCM)
-    if not groundOk or ground ~= true then return end
+    if not groundOk or ground ~= true then
+        wasOnGround = false  -- airborne: arm landing-bypass for next ground touch
+        return
+    end
 
-    -- Cooldown gate: F_Dash throttled to DASH_INTERVAL. lastDash
-    -- advances unconditionally because p.dashedTimes is not a reliable
-    -- success signal (F_ResetAndUpdateDash zeroes it post-call; some
-    -- BP states never increment it).
+    -- Landing-bypass: if we transitioned airborne→ground this tick, the
+    -- previous dash's arc has completed and the player landed. Fire the
+    -- next dash immediately so the chain feels natural (no DASH_INTERVAL
+    -- gap on top of the physics arc). DASH_INTERVAL still applies when
+    -- the player stays grounded continuously (rapid re-press safety,
+    -- e.g. on flat ground where the dash never goes airborne).
+    local justLanded = not wasOnGround
+    wasOnGround = true
+
     local now = os.clock()
-    if (now - lastDash) >= DASH_INTERVAL then
+    if justLanded or (now - lastDash) >= DASH_INTERVAL then
         -- Force-reset internal cooldown state before fire. The actual
         -- cooldown is enforced by an internal FTimerHandle that F_Dash
         -- sets; resetting these properties alone won't kill the timer
