@@ -30,7 +30,7 @@
 --   BP_AmmoBox_Utility_C              → grenades   (utility)
 
 ----------------------------------------------------------------- config
-local MOD_VERSION = "1.1.0-throw-fix"
+local MOD_VERSION = "1.1.1-diag"
 local CONFIG = {
   AMMO_RATIO         = 0.50,
   UTILITY_BLOCK_AT   = 1,
@@ -39,6 +39,8 @@ local CONFIG = {
   SETTLE_DELAY_MS    = 3000,
   SETTLE_VELOCITY    = 5.0,    -- u/s; below this = at rest
   VERBOSE            = true,
+  DIAG               = true,  -- MP-independent scanner: logs every AmmoBox actor + class + collision mode
+  DIAG_INTERVAL_MS   = 3000,
 }
 
 ------------------------------------------ UE collision-mode constants
@@ -109,6 +111,28 @@ end
 
 local function nowMs()
   return math.floor(os.clock() * 1000)
+end
+
+-- ECollisionEnabled int -> name, for diag readability.
+local CE_NAMES = {
+  [0] = "NoCollision", [1] = "QueryOnly", [2] = "PhysicsOnly",
+  [3] = "QueryAndPhysics", [4] = "ProbeOnly", [5] = "QueryAndProbe",
+}
+
+-- Read the root component's collision mode. Returns int or nil.
+local function rootCollisionMode(box)
+  local mode = nil
+  pcall(function()
+    local rc = box.RootComponent
+    if rc and rc.GetCollisionEnabled then
+      mode = rc:GetCollisionEnabled()
+      -- UE4SS sometimes hands back an enum wrapper; coerce to int.
+      if type(mode) ~= "number" then
+        pcall(function() mode = tonumber(tostring(mode)) end)
+      end
+    end
+  end)
+  return mode
 end
 
 local function unwrapCtx(ctx)
@@ -397,6 +421,61 @@ LoopAsync(1000, function()
   return allDone
 end)
 
+----------------------------------------------------------------- diagnostics
+-- MP-independent scanner. Runs on its OWN loop, never short-circuited by
+-- the MP gate, so it reports box state even in coop. For every actor
+-- found under each base class (FindAllOf returns subclasses too), logs:
+--   exact class name | collision mode | who set it (appliedMode tracker)
+-- This is the only way to see what the joker / kill-spawn box actually
+-- is and whether it's stuck PhysicsOnly.
+local DIAG_BASE_CLASSES = {
+  "BP_AmmoBox_C", "BP_AmmoBox_Spell_C", "BP_AmmoBox_Utility_C",
+  "BP_AmmoBox_Throw_C", "BP_AmmoBox_Spell_Throw_C",
+}
+local diagLastSeen = {}  -- box fullName -> last logged collision mode (log only on change/new)
+
+local function diagScan()
+  local seenClasses = {}
+  for _, base in ipairs(DIAG_BASE_CLASSES) do
+    local boxes = nil
+    pcall(function() boxes = FindAllOf(base) end)
+    if boxes then
+      for _, box in ipairs(boxes) do
+        if isValid(box) then
+          local cls = classNameOf(box) or "?"
+          local key = fname(box)
+          local mode = rootCollisionMode(box)
+          local modeName = mode and (CE_NAMES[mode] or ("?" .. tostring(mode))) or "nil"
+          seenClasses[cls] = (seenClasses[cls] or 0) + 1
+          -- Log each box once, then again only if its collision mode changed.
+          if diagLastSeen[key] ~= mode then
+            diagLastSeen[key] = mode
+            local appliedBy = appliedMode[key]
+            logf("[diag] box cls=%s collision=%s appliedByMod=%s name=%s",
+              cls, modeName,
+              appliedBy and (CE_NAMES[appliedBy] or tostring(appliedBy)) or "no",
+              key)
+          end
+        end
+      end
+    end
+  end
+  -- One-line summary of class population this scan.
+  local parts = {}
+  for cls, n in pairs(seenClasses) do parts[#parts+1] = cls .. "=" .. n end
+  if #parts > 0 then
+    logf("[diag] population: %s | hooksBound: %s",
+      table.concat(parts, " "), table.concat((function()
+        local h = {}
+        for path, ok in pairs(_G.__AGGate_hooks) do
+          if ok then h[#h+1] = path:match("BP_AmmoBox[%w_]*") or path end
+        end
+        return h
+      end)(), ","))
+  end
+end
+_G.__AGGate_diagScan = diagScan
+
 if not _G.__AGGate_started then
   _G.__AGGate_started = true
   ExecuteWithDelay(2000, function()
@@ -404,8 +483,14 @@ if not _G.__AGGate_started then
       pcall(_G.__AGGate_tick)
       return false
     end)
-    logf("ready v%s  ammoRatio=%.2f  utilityBlockAt=%d  tick=%dms  (PhysicsOnly gating)", MOD_VERSION,
-      CONFIG.AMMO_RATIO, CONFIG.UTILITY_BLOCK_AT, CONFIG.TICK_INTERVAL_MS)
+    if CONFIG.DIAG then
+      LoopAsync(CONFIG.DIAG_INTERVAL_MS, function()
+        pcall(_G.__AGGate_diagScan)
+        return false
+      end)
+    end
+    logf("ready v%s  ammoRatio=%.2f  utilityBlockAt=%d  tick=%dms  DIAG=%s  (PhysicsOnly gating)", MOD_VERSION,
+      CONFIG.AMMO_RATIO, CONFIG.UTILITY_BLOCK_AT, CONFIG.TICK_INTERVAL_MS, tostring(CONFIG.DIAG))
   end)
 else
   logf("ready (Lua reload)")
