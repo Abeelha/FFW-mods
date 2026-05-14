@@ -9,6 +9,18 @@
 -- setter lives in BP graph bytecode, mirrored from Lua via direct
 -- property write + manual OnRep invoke.
 --
+-- Multiplayer rules (added after coop testing 2026-05-10):
+--   * `isElec` is server-authoritative (replicated, RepNotify). A client
+--     write is wiped on next replication tick. Therefore: imbue ONLY
+--     when local machine has authority over the rain (i.e. host).
+--   * Imbue ONLY rains owned by the local player. Otherwise host imbues
+--     teammates' rains, which:
+--       - changes a non-consenting player's spell behavior;
+--       - desyncs combo state for teammates;
+--       - was reported as "teammate's rain bugs mine".
+--   * As pure-client: silently no-op (no server-side mirror without an
+--     RPC; out of reach from UE4SS Lua).
+--
 -- Notes:
 --   * Hook by full UFunction path (BP overrides don't bind via CPP).
 --   * Weak-keyed tracker; despawned rains GC freely.
@@ -20,30 +32,123 @@ local CONFIG = {
 }
 
 ----------------------------------------------------------------- locals
-local pcall = pcall
+local pcall, ipairs = pcall, ipairs
 
 local HOOK_BEGINPLAY =
   "/Game/Spells/Assets/Acid/BP_Rain_Acid.BP_Rain_Acid_C:ReceiveBeginPlay"
 
 local imbued = setmetatable({}, { __mode = "k" })
 
+----------------------------------------------------------------- helpers
+local function logf(fmt, ...)
+  local ok, s = pcall(string.format, fmt, ...)
+  if not ok then s = fmt end
+  pcall(print, "[AcidElec] " .. s)
+end
+
+local function isValid(o)
+  if not o then return false end
+  local v = false
+  pcall(function() v = o.IsValid and o:IsValid() or false end)
+  return v
+end
+
+-- Local PlayerController (the one IsLocalController()==true on this
+-- machine). In MP, FindFirstOf("PlayerController") can return a remote
+-- PC proxy, which is the entire MP-bug root cause for owner checks.
+local function getLocalPC()
+  local pcs = nil
+  pcall(function() pcs = FindAllOf("PlayerController") end)
+  if not pcs then return nil end
+  for _, pc in ipairs(pcs) do
+    local ok, isLocal = pcall(function() return pc:IsLocalController() end)
+    if ok and isLocal then return pc end
+  end
+  return nil
+end
+
+local function getLocalPawn()
+  local pc = getLocalPC()
+  if not isValid(pc) then return nil end
+  local pawn = nil
+  pcall(function() pawn = pc.Pawn end)
+  return isValid(pawn) and pawn or nil
+end
+
+local function isOwnedByLocal(rain)
+  local localPC   = getLocalPC()
+  local localPawn = getLocalPawn()
+  if not (localPC or localPawn) then return false end
+  local owner = nil
+  pcall(function() owner = rain.owner end)
+  local instigator = nil
+  pcall(function() instigator = rain.Instigator end)
+  if owner and (owner == localPC or owner == localPawn) then return true end
+  if instigator and (instigator == localPawn or instigator == localPC) then
+    return true
+  end
+  return false
+end
+
+local function hasAuthority(rain)
+  local ok, has = pcall(function() return rain:HasAuthority() end)
+  return ok and has or false
+end
+
 ----------------------------------------------------------------- imbue
+local function describeRain(rain)
+  local s = "?"
+  pcall(function() if rain and rain.GetFullName then s = rain:GetFullName() end end)
+  return s
+end
+
 local function imbue(rain)
   if not rain or imbued[rain] then return end
+  if not isValid(rain) then return end
 
-  local alive = false
-  pcall(function() alive = rain:IsValid() end)
-  if not alive then return end
+  local name = describeRain(rain)
+  local auth = hasAuthority(rain)
+  local owned = isOwnedByLocal(rain)
+  local owner = nil; pcall(function() owner = rain.owner end)
+  local instigator = nil; pcall(function() instigator = rain.Instigator end)
+  local localPC = getLocalPC()
+  local localPawn = getLocalPawn()
+  logf("[hook] rain=%s auth=%s owned=%s owner=%s instig=%s localPC=%s localPawn=%s",
+    name, tostring(auth), tostring(owned),
+    tostring(owner), tostring(instigator),
+    tostring(localPC), tostring(localPawn))
+
+  -- MP gate 1: only the authoritative machine can flip a replicated bool.
+  -- As pure-client this is a no-op (server overrides on next tick).
+  if not auth then
+    logf("[skip] no authority (client) — server-authoritative property")
+    return
+  end
+
+  -- MP gate 2: only act on rains the local player cast. Skip teammates'.
+  if not owned then
+    logf("[skip] not owned by local player")
+    return
+  end
 
   local already = false
   pcall(function() already = rain.isElec end)
-  if already then imbued[rain] = true; return end
+  if already then
+    imbued[rain] = true
+    logf("[skip] already elec")
+    return
+  end
 
-  local ok = pcall(function()
+  local ok, err = pcall(function()
     rain.isElec = true
     rain:OnRep_isElec()
   end)
-  if ok then imbued[rain] = true end
+  if ok then
+    imbued[rain] = true
+    logf("[apply] imbued %s", name)
+  else
+    logf("[error] imbue failed: %s", tostring(err))
+  end
 end
 
 ----------------------------------------------------------------- bootstrap
