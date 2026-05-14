@@ -35,7 +35,7 @@ local TICK_FN        = PLAYER_ASSET .. ":ReceiveTick"
 local DASH_KEY_NAME  = "LeftShift"
 local RETRY_MS       = 500
 local DASH_INTERVAL  = 0       -- seconds between cooldown nukes (0 = no throttle, fully snappy; >0 = max ~1 dash per DASH_INTERVAL seconds)
-local DEBUG_MP       = false   -- log MP edge events when set true
+local DEBUG_MP       = true    -- TEMP: log MP edge events (death/revive diagnosis)
 local DEBUG_SAMPLE_S = 2.0
 
 ----------------------------------------------------------------- locals
