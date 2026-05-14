@@ -30,6 +30,7 @@
 --   BP_AmmoBox_Utility_C              → grenades   (utility)
 
 ----------------------------------------------------------------- config
+local MOD_VERSION = "1.1.0-throw-fix"
 local CONFIG = {
   AMMO_RATIO         = 0.50,
   UTILITY_BLOCK_AT   = 1,
@@ -331,9 +332,15 @@ local function tick()
   local skipSecondary = slotFull(stats.B, CONFIG.AMMO_RATIO)
   local skipUtility   = stats.gren >= CONFIG.UTILITY_BLOCK_AT
 
-  local pB, pU = processClass("BP_AmmoBox_C",         skipPrimary)
-  local sB, sU = processClass("BP_AmmoBox_Spell_C",   skipSecondary)
-  local uB, uU = processClass("BP_AmmoBox_Utility_C", skipUtility)
+  -- Regular + Throw variants. Joker / kill-spawn upgrades use the Throw
+  -- subclass; same ammo-pool semantics as their parent class.
+  local pB1, pU1 = processClass("BP_AmmoBox_C",            skipPrimary)
+  local pB2, pU2 = processClass("BP_AmmoBox_Throw_C",      skipPrimary)
+  local sB1, sU1 = processClass("BP_AmmoBox_Spell_C",      skipSecondary)
+  local sB2, sU2 = processClass("BP_AmmoBox_Spell_Throw_C", skipSecondary)
+  local uB,  uU  = processClass("BP_AmmoBox_Utility_C",    skipUtility)
+  local pB, pU = pB1 + pB2, pU1 + pU2
+  local sB, sU = sB1 + sB2, sU1 + sU2
 
   local now = nowMs()
   if CONFIG.VERBOSE and (now - lastHeartbeat) >= CONFIG.HEARTBEAT_MS then
@@ -355,10 +362,16 @@ local function tick()
 end
 
 ----------------------------------------------------------------- driver
+-- Throw variants live under /Game/GPE/Assets/. They're child BPs of the
+-- non-Throw parents; if the child doesn't override ReceiveBeginPlay, the
+-- parent hook fires for them anyway. Registering both is defensive — the
+-- second call is a no-op via appliedMode guard if both fire.
 local BEGIN_PLAY_HOOKS = {
   "/Game/GPE/BP_AmmoBox.BP_AmmoBox_C:ReceiveBeginPlay",
   "/Game/GPE/BP_AmmoBox_Spell.BP_AmmoBox_Spell_C:ReceiveBeginPlay",
   "/Game/GPE/BP_AmmoBox_Utility.BP_AmmoBox_Utility_C:ReceiveBeginPlay",
+  "/Game/GPE/Assets/BP_AmmoBox_Throw.BP_AmmoBox_Throw_C:ReceiveBeginPlay",
+  "/Game/GPE/Assets/BP_AmmoBox_Spell_Throw.BP_AmmoBox_Spell_Throw_C:ReceiveBeginPlay",
 }
 
 _G.__AGGate_started      = _G.__AGGate_started or false
@@ -391,7 +404,7 @@ if not _G.__AGGate_started then
       pcall(_G.__AGGate_tick)
       return false
     end)
-    logf("ready  ammoRatio=%.2f  utilityBlockAt=%d  tick=%dms  (PhysicsOnly gating)",
+    logf("ready v%s  ammoRatio=%.2f  utilityBlockAt=%d  tick=%dms  (PhysicsOnly gating)", MOD_VERSION,
       CONFIG.AMMO_RATIO, CONFIG.UTILITY_BLOCK_AT, CONFIG.TICK_INTERVAL_MS)
   end)
 else
