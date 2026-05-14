@@ -64,6 +64,13 @@ local pcall, ipairs, type = pcall, ipairs, type
 local string_find = string.find
 local sqrt = math.sqrt
 
+-- MP gate state. CollisionEnabled is actor-level shared world state; in
+-- coop a host write replicates to clients, blocking teammates' boxes.
+-- Until we have per-player collision channels, disable the entire gate
+-- whenever >1 PlayerController exists. Re-evaluated every tick (cheap)
+-- so solo→coop transitions short-circuit immediately.
+local mpDisabledLogged = false
+
 ----------------------------------------------------------------- utils
 local function logf(fmt, ...)
   local ok, s = pcall(string.format, fmt, ...)
@@ -134,17 +141,37 @@ local function readWepReserve(ps, slotName)
   return cur, max
 end
 
+-- Returns ONLY the local-machine's PlayerController. FindFirstOf in MP
+-- can hand back a remote PC proxy whose PlayerState mirrors a teammate's
+-- ammo, leading to gating against the wrong player's reserves.
+local function getLocalPC()
+  local pcs = nil
+  pcall(function() pcs = FindAllOf("PlayerController") end)
+  if not pcs then return nil end
+  for _, pc in ipairs(pcs) do
+    local ok, isLocal = pcall(function() return pc:IsLocalController() end)
+    if ok and isLocal then return pc end
+  end
+  return nil
+end
+
+local function countPlayerControllers()
+  local pcs = nil
+  pcall(function() pcs = FindAllOf("PlayerController") end)
+  if not pcs then return 0 end
+  local n = 0
+  for _, _ in ipairs(pcs) do n = n + 1 end
+  return n
+end
+
 local function getPlayerState()
-  local pc = nil
-  pcall(function() pc = FindFirstOf("PlayerController") end)
+  local pc = getLocalPC()
   if isValid(pc) then
     local ps = nil
     pcall(function() ps = pc.PlayerState end)
     if isValid(ps) then return ps end
   end
-  local ps = nil
-  pcall(function() ps = FindFirstOf("BP_PlayerState_C") end)
-  return isValid(ps) and ps or nil
+  return nil
 end
 
 local function readPlayerStats()
@@ -268,6 +295,9 @@ end
 -- race window where AutoGrabber would otherwise grab between spawn and
 -- our first tick.
 local function onBoxBeginPlay(ctx)
+  -- MP gate: in coop, collision writes replicate to teammates. Until we
+  -- have per-player channels, leave boxes alone on BeginPlay too.
+  if countPlayerControllers() > 1 then return end
   local box = unwrapCtx(ctx)
   if not isValid(box) then return end
   local key = fname(box)
@@ -277,6 +307,20 @@ end
 
 ----------------------------------------------------------------- main
 local function tick()
+  -- MP gate: see notes above. Short-circuit before reading PS or boxes.
+  if countPlayerControllers() > 1 then
+    if not mpDisabledLogged then
+      mpDisabledLogged = true
+      logf("multiplayer detected (>1 PlayerController) — gate disabled to avoid teammate collision desync")
+    end
+    return
+  else
+    if mpDisabledLogged then
+      mpDisabledLogged = false
+      logf("back to solo — gate re-enabled")
+    end
+  end
+
   local stats = readPlayerStats()
   if not stats then
     once("no-ps", function() logf("no PlayerState yet") end)
