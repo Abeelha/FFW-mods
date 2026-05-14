@@ -10,27 +10,32 @@
 -- when their wrappers go invalid (level change, pawn respawn), so per-tick
 -- cost is one IsValid + two property reads + one pcall.
 --
--- MP correctness (v1.2.0): ReceiveTick on BP_Player_C fires for EVERY
+-- MP correctness (v1.2.1): ReceiveTick on BP_Player_C fires for EVERY
 -- BP_Player instance in the world — yours, every coop teammate, every
--- AI/NPC that inherits BP_Player_C. Per-pawn IsLocallyControlled is
--- unreliable (returns non-false for remote pawn proxies under UE4SS),
--- so cachedPC/cachedCM used to thrash between local + remote pawns,
--- making IsInputKeyDown query the WRONG controller — dash silently
--- no-ops while friend is in the lobby.
+-- AI/NPC that inherits BP_Player_C. Per-tick we must filter to our pawn.
 --
--- Fix: cache the local PlayerController ONCE at module level via
--- FindAllOf("PlayerController") + IsLocalController filter. Each tick,
--- gate on `pawn:GetController() == localPC`. Mismatch = not our pawn = bail.
+-- Two UE4SS quirks shape the implementation:
+--   1. `p:GetController()` returns a FRESH Lua wrapper each call, with a
+--      unique table address — even when the underlying UObject is the
+--      same. Lua `==` is identity-based, so wrapper-equality comparison
+--      ALWAYS fails. We must compare by behavior: ask the wrapper
+--      `IsLocalController()` directly.
+--   2. `p:IsLocallyControlled()` (the pawn-level shortcut) is unreliable
+--      under UE4SS — returns non-false for remote proxies. Going through
+--      the controller is more accurate.
+--
+-- So each tick: derive controller from pawn, ask `IsLocalController()`,
+-- bail if not true, then use THAT same controller wrapper for the
+-- IsInputKeyDown call (so the key lookup happens on the correct object). Mismatch = not our pawn = bail.
 
 ----------------------------------------------------------------- config
-local MOD_VERSION    = "1.2.0-mp-fix"
+local MOD_VERSION    = "1.2.1-mp-fix"
 local PLAYER_ASSET   = "/Game/Player/BP_Player.BP_Player_C"
 local TICK_FN        = PLAYER_ASSET .. ":ReceiveTick"
 local DASH_KEY_NAME  = "LeftShift"
 local RETRY_MS       = 500
 local DASH_INTERVAL  = 0       -- seconds between cooldown nukes (0 = no throttle, fully snappy; >0 = max ~1 dash per DASH_INTERVAL seconds)
-local LOCAL_PC_REFRESH_MS = 2000  -- min ms between local PC re-resolve attempts (cheap-but-not-free FindAllOf)
-local DEBUG_MP       = false   -- set true to log MP edge events (skip-noOurPawn / pc-resolve / skip-airborne)
+local DEBUG_MP       = false   -- log MP edge events when set true
 local DEBUG_SAMPLE_S = 2.0
 
 ----------------------------------------------------------------- locals
@@ -40,12 +45,10 @@ local tostring = tostring
 local ipairs   = ipairs
 
 ----------------------------------------------------------------- state
-local dashKey         = nil    -- cached FName-wrapped key struct
-local cachedLocalPC   = nil    -- the local-machine PlayerController, MP-safe
-local cachedCM        = nil    -- our pawn's CharacterMovement
-local lastNuke        = 0.0
-local lastLocalPCSeek = 0.0    -- os.clock() of last FindAllOf attempt
-local dbgLast         = {}
+local dashKey   = nil    -- cached FName-wrapped key struct
+local cachedCM  = nil    -- our pawn's CharacterMovement
+local lastNuke  = 0.0
+local dbgLast   = {}
 
 ----------------------------------------------------------------- helpers
 local function log(m) print("[BHopDash] " .. m) end
@@ -64,29 +67,6 @@ local function buildDashKey()
     return k
 end
 
--- Resolve the local PlayerController (the one with IsLocalController()==true).
--- FindAllOf is the only reliable way; FindFirstOf in MP often returns a
--- remote PC proxy. Throttle the scan because each call walks UObjects.
-local function resolveLocalPC()
-    local now = os.clock()
-    if cachedLocalPC and cachedLocalPC:IsValid() then return cachedLocalPC end
-    if (now - lastLocalPCSeek) * 1000 < LOCAL_PC_REFRESH_MS then return nil end
-    lastLocalPCSeek = now
-
-    local pcs = nil
-    pcall(function() pcs = FindAllOf("PlayerController") end)
-    if not pcs then return nil end
-    for _, pc in ipairs(pcs) do
-        local ok, isLocal = pcall(function() return pc:IsLocalController() end)
-        if ok and isLocal then
-            cachedLocalPC = pc
-            dbg("pc-resolve", "localPC found: " .. tostring(pc))
-            return pc
-        end
-    end
-    return nil
-end
-
 ----------------------------------------------------------------- hot path
 local function onTick(ctx)
     local p = ctx
@@ -96,35 +76,38 @@ local function onTick(ctx)
     end
     if not p or not p:IsValid() then return end
 
-    -- MP gate: confirm THIS pawn's controller is OUR local PC. In MP,
-    -- ReceiveTick fires for every BP_Player_C in the world, so we must
-    -- filter or we'll thrash caches across teammates' pawns.
-    local localPC = resolveLocalPC()
-    if not localPC then return end
-
+    -- MP gate: derive controller fresh each tick, ask IT if local. Do NOT
+    -- compare controller wrappers by identity — UE4SS returns a unique
+    -- Lua wrapper instance every GetController() call, so `==` always
+    -- mismatches even for the same underlying UObject.
     local pawnCtrl = nil
     pcall(function() pawnCtrl = p:GetController() end)
-    if not pawnCtrl or pawnCtrl ~= localPC then
-        dbg("skip-notOurs", "tick on non-local pawn (controller mismatch)")
+    if not pawnCtrl then
+        dbg("skip-noCtrl", "pawn has no controller")
+        return
+    end
+    local lOk, isLocal = pcall(function() return pawnCtrl:IsLocalController() end)
+    if not lOk or isLocal ~= true then
+        dbg("skip-notOurs", "controller IsLocalController=" .. tostring(isLocal))
         return
     end
 
     -- Refresh CM if invalidated (level change, respawn, weapon swap, etc).
     if not cachedCM or not cachedCM:IsValid() then
         cachedCM = p.CharacterMovement
-        dbg("cm-refresh", "cachedCM re-resolved: " .. tostring(cachedCM))
+        dbg("cm-refresh", "cachedCM re-resolved")
     end
     if not cachedCM or not cachedCM:IsValid() then
         dbg("ref-fail", "no CM after refresh")
         return
     end
 
-    local heldOk, held = pcall(localPC.IsInputKeyDown, localPC, dashKey)
+    local heldOk, held = pcall(pawnCtrl.IsInputKeyDown, pawnCtrl, dashKey)
     if not heldOk or held ~= true then return end
 
     local groundOk, ground = pcall(cachedCM.IsMovingOnGround, cachedCM)
     if not groundOk or ground ~= true then
-        if held == true then dbg("skip-airborne", "held=true but not on ground") end
+        dbg("skip-airborne", "held=true but not on ground")
         return
     end
 
@@ -161,8 +144,7 @@ _G.__BHopDash_hooked = _G.__BHopDash_hooked or false
 _G.__BHopDash_onTick = onTick  -- always point latest closure
 
 -- On Lua reload, invalidate caches so new closure resolves fresh state.
-cachedLocalPC = nil
-cachedCM      = nil
+cachedCM = nil
 
 LoopAsync(RETRY_MS, function()
     if _G.__BHopDash_hooked then
