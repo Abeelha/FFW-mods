@@ -15,7 +15,7 @@ local PLAYER_ASSET  = "/Game/Player/BP_Player.BP_Player_C"
 local TICK_FN       = PLAYER_ASSET .. ":ReceiveTick"
 local DASH_KEY_NAME = "LeftShift"
 local RETRY_MS      = 500
-local DASH_INTERVAL = 0.2  -- seconds between cooldown nukes (0 = no throttle, fully snappy; >0 = max ~1 dash per DASH_INTERVAL seconds)
+local DASH_INTERVAL = 0  -- seconds between cooldown nukes (0 = no throttle, fully snappy; >0 = max ~1 dash per DASH_INTERVAL seconds)
 
 ----------------------------------------------------------------- locals
 local pcall    = pcall
