@@ -27,8 +27,11 @@
 --   * Single startup log line, no per-rain spam.
 
 ----------------------------------------------------------------- config
+local MOD_VERSION = "1.1.0-mp-debug"
 local CONFIG = {
-  IMBUE_DELAY_MS = 250,   -- post-BeginPlay grace for replication settle
+  IMBUE_DELAY_MS    = 250,   -- post-BeginPlay grace for replication settle
+  POSTCHECK_DELAY_MS = 750,  -- delay before re-reading isElec to confirm persistence
+  HOOK_ONREP_ISELEC  = true, -- log every OnRep_isElec fire (ours + game's own)
 }
 
 ----------------------------------------------------------------- locals
@@ -139,16 +142,64 @@ local function imbue(rain)
     return
   end
 
+  -- Snapshot pre-write rain state for post-check comparison. Read
+  -- whichever damage/element fields the BP exposes; unknown fields
+  -- silently no-op via pcall.
+  local preElec, preDamage = nil, nil
+  pcall(function() preElec   = rain.isElec end)
+  pcall(function() preDamage = rain.damage end)
+  logf("[pre]   isElec=%s damage=%s", tostring(preElec), tostring(preDamage))
+
   local ok, err = pcall(function()
     rain.isElec = true
     rain:OnRep_isElec()
   end)
   if ok then
     imbued[rain] = true
-    logf("[apply] imbued %s", name)
+    -- Read back immediately to confirm write landed before any replication.
+    local postElec = nil
+    pcall(function() postElec = rain.isElec end)
+    logf("[apply] imbued %s | postWriteIsElec=%s", name, tostring(postElec))
+
+    -- Re-check after settle to detect replication wipes (client) or
+    -- game-side toggles. If isElec drops back to false here, either:
+    --   * we don't actually have authority despite HasAuthority returning true
+    --   * the BP graph immediately undoes our write (combo-state machine)
+    ExecuteWithDelay(CONFIG.POSTCHECK_DELAY_MS, function()
+      ExecuteInGameThread(function()
+        if not isValid(rain) then
+          logf("[post]  rain GC'd before postcheck")
+          return
+        end
+        local stillElec, postDamage = nil, nil
+        pcall(function() stillElec  = rain.isElec end)
+        pcall(function() postDamage = rain.damage end)
+        logf("[post]  isElec=%s damage=%s (delta damage=%s)",
+          tostring(stillElec), tostring(postDamage),
+          tostring(preDamage ~= postDamage))
+      end)
+    end)
   else
     logf("[error] imbue failed: %s", tostring(err))
   end
+end
+
+----------------------------------------------------------------- onrep hook
+-- Hooking OnRep_isElec catches every flip — ours + game's own (when a
+-- Thunderstrike spell hits an existing rain). Distinguishes "our write
+-- triggered OnRep" from "game flipped it elsewhere".
+local HOOK_ONREP = "/Game/Spells/Assets/Acid/BP_Rain_Acid.BP_Rain_Acid_C:OnRep_isElec"
+
+local function onRepHook(self)
+  if not CONFIG.HOOK_ONREP_ISELEC then return end
+  local rain = nil
+  pcall(function() rain = self:get() end)
+  if not isValid(rain) then return end
+  local elec = nil; pcall(function() elec = rain.isElec end)
+  local auth = hasAuthority(rain)
+  local owned = isOwnedByLocal(rain)
+  logf("[OnRep] rain=%s isElec=%s auth=%s owned=%s",
+    describeRain(rain), tostring(elec), tostring(auth), tostring(owned))
 end
 
 ----------------------------------------------------------------- bootstrap
@@ -164,10 +215,13 @@ local function bindHook()
         ExecuteInGameThread(function() imbue(s) end)
       end)
     end)
+    if CONFIG.HOOK_ONREP_ISELEC then
+      RegisterHook(HOOK_ONREP, function(self) onRepHook(self) end)
+    end
   end)
   if ok then
     _G.__AcidElec_bound = true
-    pcall(print, "[AcidElec] ready")
+    pcall(print, "[AcidElec] ready v" .. MOD_VERSION)
     return true
   end
   return false
